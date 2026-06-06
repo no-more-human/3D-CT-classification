@@ -1,0 +1,13 @@
+{
+  "lsp": {
+    "ignorePatterns": [
+      "dataset/**",
+      "**/*.gz",
+      "**/*.nii.gz",
+      "**/*.pth",
+      "**/*.pt",
+      "**/*.ckpt",
+      "**/__pycache__/**"
+    ]
+  }
+}

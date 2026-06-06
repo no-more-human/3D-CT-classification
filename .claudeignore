@@ -1,0 +1,26 @@
+# Python 自动生成文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# 数据集和大文件
+dataset/
+data/
+*.gz
+*.nii
+*.nii.gz
+
+# 模型权重文件
+*.pth
+*.pt
+*.ckpt
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# Git
+.git/
