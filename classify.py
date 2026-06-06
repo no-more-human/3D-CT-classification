@@ -41,6 +41,8 @@ group.add_argument("--data_dir", type=str, default=None,
                    help="待分类数据目录（按 FD/OF 子目录组织时有标签，否则纯推理）")
 group.add_argument("--single", type=str, default=None,
                    help="单文件推理：指定一个 .nii.gz 文件路径")
+group.add_argument("--test_split", type=str, default=None,
+                   help="从训练时保存的 test_split.json 加载测试集并评估")
 parser.add_argument("--model", type=str, default="best_model_tl.pth",
                     help="模型权重文件路径")
 parser.add_argument("--image_size", type=int, default=96, help="输入尺寸（需与训练时一致）")
@@ -140,6 +142,32 @@ def build_samples(data_dir):
         sys.exit(1)
 
     return samples, has_label
+
+
+def load_test_split(split_path):
+    """
+    从训练时保存的 test_split.json 加载测试集样本列表。
+    返回 (samples, has_label=True)
+    """
+    import json as _json
+
+    if not os.path.exists(split_path):
+        print(f"❌ 测试集文件不存在: {split_path}")
+        sys.exit(1)
+
+    with open(split_path, "r", encoding="utf-8") as fh:
+        samples = _json.load(fh)
+
+    # 验证格式
+    for s in samples:
+        if "image" not in s or "label" not in s:
+            print(f"❌ test_split.json 格式错误，缺少 image/label 字段")
+            sys.exit(1)
+        if not os.path.exists(s["image"]):
+            print(f"⚠️  测试集文件不存在: {s['image']}")
+
+    print(f"✅ 已加载测试集: {len(samples)} 例")
+    return samples, True  # 测试集必定有标签
 
 
 # ==========================================
@@ -273,6 +301,8 @@ def main():
     if args.single:
         samples = [{"image": args.single, "label": -1}]
         has_label = False
+    elif args.test_split:
+        samples, has_label = load_test_split(args.test_split)
     else:
         samples, has_label = build_samples(args.data_dir)
 

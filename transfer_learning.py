@@ -235,7 +235,13 @@ def setup_differential_lr(model, base_lr, backbone_factor=0.1):
 # ==========================================
 # 4. 数据集拆分与评估（同 train.py）
 # ==========================================
-def get_train_test_split(data_dir, test_ratio=0.2, random_seed=42):
+def get_train_val_test_split(data_dir, val_ratio=0.1, test_ratio=0.1, random_seed=42):
+    """
+    按类别分层划分数据集为训练集/验证集/测试集（默认 8:1:1）。
+    测试集文件路径写入 test_split.json，供 classify.py 独立评估。
+    """
+    import json as _json
+
     fd_files = sorted(glob.glob(os.path.join(data_dir, "FD", "*.nii.gz")))
     of_files = sorted(glob.glob(os.path.join(data_dir, "OF", "*.nii.gz")))
     print(f">>> 数据集: FD={len(fd_files)} 例, OF={len(of_files)} 例")
@@ -244,30 +250,50 @@ def get_train_test_split(data_dir, test_ratio=0.2, random_seed=42):
     random.shuffle(fd_files)
     random.shuffle(of_files)
 
-    fd_split = int(len(fd_files) * (1 - test_ratio))
-    of_split = int(len(of_files) * (1 - test_ratio))
+    # 计算各类别的切分点
+    fd_val_n = int(len(fd_files) * val_ratio)
+    fd_test_n = int(len(fd_files) * test_ratio)
+    fd_train_n = len(fd_files) - fd_val_n - fd_test_n
 
-    train_files, test_files = [], []
-    for f in fd_files[:fd_split]:
-        train_files.append({"image": f, "label": 0})
-    for f in fd_files[fd_split:]:
-        test_files.append({"image": f, "label": 0})
-    for f in of_files[:of_split]:
-        train_files.append({"image": f, "label": 1})
-    for f in of_files[of_split:]:
-        test_files.append({"image": f, "label": 1})
+    of_val_n = int(len(of_files) * val_ratio)
+    of_test_n = int(len(of_files) * test_ratio)
+    of_train_n = len(of_files) - of_val_n - of_test_n
+
+    # FD 切分
+    fd_train = fd_files[:fd_train_n]
+    fd_val   = fd_files[fd_train_n:fd_train_n + fd_val_n]
+    fd_test  = fd_files[fd_train_n + fd_val_n:]
+
+    # OF 切分
+    of_train = of_files[:of_train_n]
+    of_val   = of_files[of_train_n:of_train_n + of_val_n]
+    of_test  = of_files[of_train_n + of_val_n:]
+
+    # 组装样本列表
+    train_files, val_files, test_files = [], [], []
+    for f in fd_train:  train_files.append({"image": f, "label": 0})
+    for f in fd_val:    val_files.append({"image": f, "label": 0})
+    for f in fd_test:   test_files.append({"image": f, "label": 0})
+    for f in of_train:  train_files.append({"image": f, "label": 1})
+    for f in of_val:    val_files.append({"image": f, "label": 1})
+    for f in of_test:   test_files.append({"image": f, "label": 1})
 
     random.shuffle(train_files)
-    random.shuffle(test_files)
+    random.shuffle(val_files)
 
-    train_fd = sum(1 for d in train_files if d["label"] == 0)
-    train_of = sum(1 for d in train_files if d["label"] == 1)
-    test_fd = sum(1 for d in test_files if d["label"] == 0)
-    test_of = sum(1 for d in test_files if d["label"] == 1)
-    print(f">>> 训练集: {len(train_files)} 例 (FD={train_fd}, OF={train_of})")
-    print(f">>> 测试集: {len(test_files)} 例 (FD={test_fd}, OF={test_of})")
+    # 保存测试集文件列表供 classify.py 使用
+    split_path = os.path.join(os.path.dirname(__file__), "test_split.json")
+    with open(split_path, "w", encoding="utf-8") as fh:
+        _json.dump(test_files, fh, ensure_ascii=False, indent=2)
+    print(f">>> 测试集列表已保存: {split_path}")
 
-    return train_files, test_files
+    # 日志
+    def _count(x, lbl): return sum(1 for d in x if d["label"] == lbl)
+    print(f">>> 训练集: {len(train_files)} 例 (FD={_count(train_files,0)}, OF={_count(train_files,1)})")
+    print(f">>> 验证集: {len(val_files)} 例   (FD={_count(val_files,0)}, OF={_count(val_files,1)})")
+    print(f">>> 测试集: {len(test_files)} 例  (FD={_count(test_files,0)}, OF={_count(test_files,1)})")
+
+    return train_files, val_files, test_files
 
 
 @torch.no_grad()
@@ -302,17 +328,17 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     image_size = args.image_size
 
-    # ---- 数据准备 ----
-    train_files, test_files = get_train_test_split(args.data_dir)
+    # ---- 数据准备：8:1:1 三路划分 ----
+    train_files, val_files, test_files = get_train_val_test_split(args.data_dir)
     train_transforms = Compose([
         LoadImaged(keys=["image"], reader="ITKReader"),
         EnsureChannelFirstd(keys=["image"]),
         ScaleIntensityd(keys=["image"]),
         Resized(keys=["image"], spatial_size=(image_size, image_size, image_size)),
         RandRotate90d(keys=["image"], prob=0.5, spatial_axes=(0, 2)),
-        RandFlipd(keys=["image"], prob=0.5, spatial_axis=0),
+        RandFlipd(keys=["image"], prob=0.5, spatial_axis=2),  # 矢状轴（左右）翻转，解剖学合理
     ])
-    test_transforms = Compose([
+    val_transforms = Compose([
         LoadImaged(keys=["image"], reader="ITKReader"),
         EnsureChannelFirstd(keys=["image"]),
         ScaleIntensityd(keys=["image"]),
@@ -323,10 +349,11 @@ def main():
         Dataset(data=train_files, transform=train_transforms),
         batch_size=args.batch_size, shuffle=True, num_workers=0
     )
-    test_loader = DataLoader(
-        Dataset(data=test_files, transform=test_transforms),
+    val_loader = DataLoader(
+        Dataset(data=val_files, transform=val_transforms),
         batch_size=args.batch_size, shuffle=False, num_workers=0
     )
+    # 测试集不参与训练，已保存到 test_split.json 供 classify.py 独立评估
 
     # ---- 模型构建 ----
     base_vsnet = VSNet(img_size=image_size, in_channels=1, out_channels=3, training=False)
@@ -346,7 +373,7 @@ def main():
     loss_function = nn.CrossEntropyLoss()
     scaler = GradScaler("cuda")
 
-    best_test_acc = 0.0
+    best_val_acc = 0.0
 
     for epoch in range(args.epochs):
         # ---- 渐进式解冻 ----
@@ -377,25 +404,27 @@ def main():
             scaler.update()
             epoch_loss += loss.item()
 
-        # ---- 评估 ----
-        test_acc, fd_acc, of_acc, _, _ = evaluate(model, test_loader, device)
+        # ---- 评估（验证集） ----
+        val_acc, fd_acc, of_acc, _, _ = evaluate(model, val_loader, device)
         phase = "冻结" if (pretrained_loaded and epoch < args.freeze_epochs) else "微调"
         print(f"Epoch [{epoch+1}/{args.epochs}][{phase}] "
               f"Loss: {epoch_loss/step:.4f} | "
-              f"Acc: {test_acc:.2f}% (FD:{fd_acc:.2f}% OF:{of_acc:.2f}%)")
+              f"Val Acc: {val_acc:.2f}% (FD:{fd_acc:.2f}% OF:{of_acc:.2f}%)")
 
-        if test_acc > best_test_acc:
-            best_test_acc = test_acc
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
             torch.save(model.state_dict(), args.save_path)
-            print(f"  >>> 保存最优模型 (Acc={best_test_acc:.2f}%)")
+            print(f"  >>> 保存最优模型 (Val Acc={best_val_acc:.2f}%)")
 
-    # ---- 最终评估 ----
+    # ---- 最终评估（验证集） ----
     print(f"\n{'='*60}")
-    print(f"  迁移学习训练完成！最优准确率: {best_test_acc:.2f}%")
+    print(f"  迁移学习训练完成！最优验证准确率: {best_val_acc:.2f}%")
+    print(f"  测试集未参与训练，请用 classify.py 评估:")
+    print(f"    python classify.py --model {args.save_path} --test_split test_split.json")
     if os.path.exists(args.save_path):
         model.load_state_dict(torch.load(args.save_path, map_location=device))
-    overall_acc, fd_acc, of_acc, correct, total = evaluate(model, test_loader, device)
-    print(f"  最终测试: {overall_acc:.2f}% (FD:{fd_acc:.2f}% OF:{of_acc:.2f}%)")
+    val_acc, fd_acc, of_acc, correct, total = evaluate(model, val_loader, device)
+    print(f"  最终验证集: {val_acc:.2f}% (FD:{fd_acc:.2f}% OF:{of_acc:.2f}%)")
     print(f"{'='*60}")
 
 
