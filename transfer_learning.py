@@ -35,7 +35,7 @@ from VSNet import VSNet
 # ==========================================
 parser = argparse.ArgumentParser(description="VSNet 迁移学习训练")
 parser.add_argument("--lr", type=float, default=2e-4, help="初始学习率")
-parser.add_argument("--epochs", type=int, default=30, help="训练总轮数")
+parser.add_argument("--epochs", type=int, default=40, help="训练总轮数")
 parser.add_argument("--freeze_epochs", type=int, default=10,
                     help="冻结 backbone 的轮数（先训练分类头）")
 parser.add_argument("--batch_size", type=int, default=1, help="批次大小")
@@ -259,6 +259,14 @@ def get_train_test_split(data_dir, test_ratio=0.2, random_seed=42):
 
     random.shuffle(train_files)
     random.shuffle(test_files)
+
+    train_fd = sum(1 for d in train_files if d["label"] == 0)
+    train_of = sum(1 for d in train_files if d["label"] == 1)
+    test_fd = sum(1 for d in test_files if d["label"] == 0)
+    test_of = sum(1 for d in test_files if d["label"] == 1)
+    print(f">>> 训练集: {len(train_files)} 例 (FD={train_fd}, OF={train_of})")
+    print(f">>> 测试集: {len(test_files)} 例 (FD={test_fd}, OF={test_of})")
+
     return train_files, test_files
 
 

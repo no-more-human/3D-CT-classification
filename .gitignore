@@ -13,6 +13,9 @@ data/
 *.nii
 *.nii.gz
 
+# 模型权重
+*.pth
+
 # 系统文件
 Thumbs.db
 .DS_Store

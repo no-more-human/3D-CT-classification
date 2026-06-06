@@ -9,9 +9,12 @@
 | 文件 | 职责 |
 |------|------|
 | `VSNet.py` | VSNet 模型定义，包含 Swin Transformer 编码器、注意力机制(CSA/SSA)、解码器和多任务输出头 |
-| `train.py` | 训练主流程：数据加载、训练/测试集拆分(8:2)、VSNetClassifier 分类封装、训练循环与评估 |
-| `preprocess.py` | DICOM → NIfTI 格式转换预处理脚本 |
+| `preprocess.py` | 第一步：DICOM → NIfTI 格式转换 |
+| `augment.py` | 第二步：离线数据增强（旋转/剪切/噪声/对比度/平滑），扩充数据集 |
+| `transfer_learning.py` | 第三步（主训练脚本）：迁移学习训练，支持 MONAI 预训练权重 + 渐进式解冻 |
+| `classify.py` | 推理脚本：用训练好的模型对新样本分类，自动检测标签并计算准确率 |
 | `best_model.pth` | 训练过程中保存的最优模型权重 |
+| `best_model_tl.pth` | 迁移学习保存的最优模型权重 |
 
 ## 关键依赖
 
@@ -29,18 +32,26 @@ VSNet (backbone)
   ├── CSA + SSA 注意力模块
   └── ResU-Net 解码器 + 多任务输出
 
-train.py 中的 VSNetClassifier:
+VSNetClassifier (分类封装):
   VSNet 编码器 + Swin → 全局平均池化 → FC(192→2) → 二分类
 ```
 
 ## 运行方式
 
 ```bash
-# 1. 预处理：将 DICOM 转为 NIfTI
+# 第一步：DICOM → NIfTI（一次性）
 python preprocess.py
 
-# 2. 训练分类模型
-python train.py
+# 第二步：数据增强（推荐 5 倍，一次性）
+python augment.py
+
+# 第三步：训练
+python transfer_learning.py                     # 迁移学习（推荐）
+python transfer_learning.py --no_pretrain       # 从头训练（对比实验）
+
+# 推理：对新数据分类
+python classify.py --model best_model_tl.pth --data_dir <新数据目录>
+python classify.py --model best_model_tl.pth --single <单个.nii.gz文件>
 ```
 
 训练输出包括：每个 epoch 的训练损失、测试准确率（整体 + FD/OF 各类别），以及最终测试集评估报告。
