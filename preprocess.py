@@ -85,7 +85,7 @@ def process_all_data(base_dir, output_base_dir):
                     dcm2nii(dcm_folder, out_file)
                     print(f"成功保存 -> {out_file}")
                 except Exception as e:
-                    print(f"❌ 错误: 无法转换 {dcm_folder}, 原因: {e}")
+                    print(f"[ERROR] 错误: 无法转换 {dcm_folder}, 原因: {e}")
 
 if __name__ == "__main__":
     # 修改为你的全英文路径

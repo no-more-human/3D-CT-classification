@@ -90,7 +90,7 @@ class VSNetClassifier(nn.Module):
 def load_model(model_path, image_size, device):
     """加载训练好的模型权重"""
     if not os.path.exists(model_path):
-        print(f"❌ 模型文件不存在: {model_path}")
+        print(f"[ERROR] 模型文件不存在: {model_path}")
         sys.exit(1)
 
     base_vsnet = VSNet(img_size=image_size, in_channels=1, out_channels=3, training=False)
@@ -99,7 +99,7 @@ def load_model(model_path, image_size, device):
     state_dict = torch.load(model_path, map_location=device)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
-    print(f"✅ 已加载模型: {model_path}")
+    print(f"[OK] 已加载模型: {model_path}")
     return model
 
 
@@ -138,7 +138,7 @@ def build_samples(data_dir):
             samples.append({"image": f, "label": -1})
 
     if not samples:
-        print(f"❌ 在 {data_dir} 中未找到 .nii.gz 文件")
+        print(f"[ERROR] 在 {data_dir} 中未找到 .nii.gz 文件")
         sys.exit(1)
 
     return samples, has_label
@@ -152,7 +152,7 @@ def load_test_split(split_path):
     import json as _json
 
     if not os.path.exists(split_path):
-        print(f"❌ 测试集文件不存在: {split_path}")
+        print(f"[ERROR] 测试集文件不存在: {split_path}")
         sys.exit(1)
 
     with open(split_path, "r", encoding="utf-8") as fh:
@@ -161,12 +161,12 @@ def load_test_split(split_path):
     # 验证格式
     for s in samples:
         if "image" not in s or "label" not in s:
-            print(f"❌ test_split.json 格式错误，缺少 image/label 字段")
+            print(f"[ERROR] test_split.json 格式错误，缺少 image/label 字段")
             sys.exit(1)
         if not os.path.exists(s["image"]):
-            print(f"⚠️  测试集文件不存在: {s['image']}")
+            print(f"[WARN] 测试集文件不存在: {s['image']}")
 
-    print(f"✅ 已加载测试集: {len(samples)} 例")
+    print(f"[OK] 已加载测试集: {len(samples)} 例")
     return samples, True  # 测试集必定有标签
 
 
@@ -208,7 +208,7 @@ def classify(model, samples, image_size, device):
                 "probs": probs.cpu().numpy(),
             })
         except Exception as e:
-            print(f"  ⚠️  跳过 {sample['image']}: {e}")
+            print(f"  [WARN] 跳过 {sample['image']}: {e}")
 
     return results
 
@@ -236,7 +236,7 @@ def print_results(results, has_label):
         conf_str = f"{r['confidence']*100:.1f}%"
         if has_label:
             label_name = CLASS_NAMES.get(r["label"], "?")
-            is_correct = "✓" if r["label"] == r["pred"] else "✗"
+            is_correct = "OK" if r["label"] == r["pred"] else "WRONG"
             print(f"{r['filename']:<30} {label_name:>6} {r['pred_name']:>6} {conf_str:>10} {is_correct:>8}")
 
             total += 1

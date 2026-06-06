@@ -108,7 +108,7 @@ def load_pretrained_weights(model, device):
             state_dict = pretrained.state_dict() if hasattr(pretrained, "state_dict") else pretrained
             _map_swin_weights(model, state_dict)
             pretrained_loaded = True
-            print("[迁移学习] ✅ 成功加载 MONAI SwinUNETR 预训练权重")
+            print("[迁移学习] [OK] 成功加载 MONAI SwinUNETR 预训练权重")
     except Exception as e:
         print(f"[迁移学习] MONAI Bundle 加载失败: {e}")
 
@@ -124,13 +124,13 @@ def load_pretrained_weights(model, device):
             # 注意：MedicalNet 与 VSNet 架构不同，这里提取 Conv1 权重做部分初始化
             _map_medicalnet_weights(model, pretrained.state_dict())
             pretrained_loaded = True
-            print("[迁移学习] ✅ 成功加载 MedicalNet 预训练权重")
+            print("[迁移学习] [OK] 成功加载 MedicalNet 预训练权重")
         except Exception as e:
             print(f"[迁移学习] torch.hub 加载失败: {e}")
 
     # ----- 途径 3: 若都失败，退化策略 -----
     if not pretrained_loaded:
-        print("[迁移学习] ⚠️  预训练模型加载失败，启用退化策略：强力正则化 + Kaiming 初始化")
+        print("[迁移学习] [WARN] 预训练模型加载失败，启用退化策略：强力正则化 + Kaiming 初始化")
         _apply_kaiming_init(model)
         warnings.warn(
             "预训练权重加载失败，将在随机初始化下训练。"

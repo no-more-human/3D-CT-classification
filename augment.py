@@ -61,7 +61,7 @@ def build_augment_pipeline():
         ),
 
         # 4. 随机高斯噪声：模拟 CT 设备噪声
-        RandGaussianNoise(prob=0.4, std=0.005, relative=True),
+        RandGaussianNoise(prob=0.4, std=0.005),
 
         # 5. 随机对比度调节：模拟不同窗宽窗位
         RandAdjustContrast(prob=0.3, gamma=(0.85, 1.15)),
@@ -94,13 +94,13 @@ def main():
     for cat in CATEGORIES:
         cat_dir = os.path.join(DATA_DIR, cat)
         if not os.path.exists(cat_dir):
-            print(f"⚠️  目录不存在，跳过: {cat_dir}")
+            print(f"[WARN] 目录不存在，跳过: {cat_dir}")
             continue
 
         all_files = sorted(glob.glob(os.path.join(cat_dir, "*.nii.gz")))
         originals = [f for f in all_files if _is_original_file(f)]
 
-        print(f"\n📂 {cat}: 原始 {len(originals)} 例 → 每例生成 {AUGMENT_FACTOR} 份增强样本")
+        print(f"\n[{cat}] 原始 {len(originals)} 例 -> 每例生成 {AUGMENT_FACTOR} 份增强样本")
 
         for src_path in tqdm(originals, desc=f"  {cat} 增强中", unit="例"):
             base_name = os.path.splitext(os.path.splitext(
@@ -109,11 +109,11 @@ def main():
             try:
                 sitk_img = sitk.ReadImage(src_path)
             except Exception as e:
-                print(f"\n  ❌ 加载失败 {src_path}: {e}")
+                print(f"\n  [ERROR] 加载失败 {src_path}: {e}")
                 continue
 
             # SimpleITK → numpy float32 → tensor [1, D, H, W]
-            arr = sitk.GetArrayFromView(sitk_img).astype(np.float32)  # [D, H, W]
+            arr = sitk.GetArrayFromImage(sitk_img).astype(np.float32)  # [D, H, W]
             img_tensor = torch.from_numpy(arr).unsqueeze(0)            # [1, D, H, W]
 
             for aug_idx in range(AUGMENT_FACTOR):
@@ -157,7 +157,7 @@ def main():
             DATA_DIR, _last_example_cat,
             f"{os.path.splitext(os.path.splitext(os.path.basename(example_base))[0])[0]}_aug0.nii.gz"
         )
-        print(f"\n📁 示例增强文件路径: {example}")
+        print(f"\n示例增强文件路径: {example}")
 
 
 if __name__ == "__main__":
