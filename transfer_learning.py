@@ -18,7 +18,7 @@ import os
 import glob
 import json
 import random
-import tempfile
+
 import argparse
 import warnings
 
@@ -105,7 +105,7 @@ def load_pretrained_weights(model, device):
         # SwinUNETR BTCV 多器官分割模型
         pretrained = load(
             name="swin_unetr_btcv_segmentation",
-            bundle_dir=os.path.join(tempfile.gettempdir(), "monai_models"),
+            bundle_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "pretrained_models"),
             source="github",
         )
         if pretrained is not None:

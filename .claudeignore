@@ -17,6 +17,10 @@ data/
 *.pth
 *.pt
 *.ckpt
+pretrained_models/
+
+# 训练自动生成
+test_split.json
 
 # 系统文件
 Thumbs.db
