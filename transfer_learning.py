@@ -43,7 +43,7 @@ parser.add_argument("--lr", type=float, default=2e-4, help="初始学习率")
 parser.add_argument("--epochs", type=int, default=40, help="训练总轮数")
 parser.add_argument("--freeze_epochs", type=int, default=5,
                     help="冻结 backbone 的轮数（先训练分类头）")
-parser.add_argument("--batch_size", type=int, default=1, help="批次大小")
+parser.add_argument("--batch_size", type=int, default=4, help="批次大小")
 parser.add_argument("--data_dir", type=str,
                     default=r"F:\python\3DCT_Classification\dataset\NIfTI_Data",
                     help="数据集路径")
@@ -93,28 +93,43 @@ class VSNetClassifier(nn.Module):
 # ==========================================
 def load_pretrained_weights(model, device):
     """
-    尝试从 MONAI Model Zoo 加载 SwinUNETR 预训练权重，映射到 VSNet 兼容层。
+    尝试从本地预训练模型文件加载 SwinUNETR 权重，映射到 VSNet 兼容层。
     若失败则退化为随机初始化 + 强力正则化。
     """
     pretrained_loaded = False
 
-    # ----- MONAI Bundle -----
+    # ----- 直接加载已下载的 model.pt -----
+    model_pt = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "pretrained_models", "swin_unetr_btcv_segmentation", "models", "model.pt",
+    )
     try:
-        from monai.bundle import load
-        print("[迁移学习] 尝试从 MONAI Model Zoo 下载 SwinUNETR 预训练权重...")
-        # SwinUNETR BTCV 多器官分割模型
-        pretrained = load(
-            name="swin_unetr_btcv_segmentation",
-            bundle_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "pretrained_models"),
-            source="github",
-        )
-        if pretrained is not None:
-            state_dict = pretrained.state_dict() if hasattr(pretrained, "state_dict") else pretrained
-            _map_swin_weights(model, state_dict)
-            pretrained_loaded = True
-            print("[迁移学习] [OK] 成功加载 MONAI SwinUNETR 预训练权重")
+        if not os.path.exists(model_pt):
+            # 首次运行: 通过 MONAI Bundle 下载权重文件
+            print("[迁移学习] 本地未找到预训练权重，尝试从 MONAI Model Zoo 下载...")
+            from monai.bundle import load
+            load(
+                name="swin_unetr_btcv_segmentation",
+                bundle_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "pretrained_models"),
+                source="github",
+            )
+            if not os.path.exists(model_pt):
+                raise FileNotFoundError(f"下载后仍未找到: {model_pt}")
+
+        print("[迁移学习] 加载预训练 SwinUNETR 权重...")
+        state_dict = torch.load(model_pt, map_location="cpu")
+
+        # 处理嵌套格式 (e.g. {"state_dict": {...}} 或 {"model": {...}})
+        if isinstance(state_dict, dict) and "state_dict" in state_dict:
+            state_dict = state_dict["state_dict"]
+        elif isinstance(state_dict, dict) and "model" in state_dict:
+            state_dict = state_dict["model"]
+
+        _map_swin_weights(model, state_dict)
+        pretrained_loaded = True
+        print("[迁移学习] [OK] 成功加载 MONAI SwinUNETR 预训练权重")
     except Exception as e:
-        print(f"[迁移学习] MONAI Bundle 加载失败: {e}")
+        print(f"[迁移学习] 预训练权重加载失败: {e}")
 
     # ----- 退化为 Kaiming 初始化 -----
     if not pretrained_loaded:
@@ -130,37 +145,50 @@ def load_pretrained_weights(model, device):
 
 def _map_swin_weights(model, pretrained_dict):
     """
-    【修复版】将 SwinUNETR 的预训练权重映射到 VSNet 的 Swin Transformer 瓶颈层。
+    【修复版 v2】将 SwinUNETR 的预训练权重映射到 VSNet 的 Swin Transformer 瓶颈层。
+
+    预训练 SwinUNETR 键格式:  swinViT.layers{N}.0.blocks.{i}.param
+    VSNet swintransformer 键格式:  swintransformer.blocks.{i}.param
+
+    按 dim 匹配：VSNet dim=96，对应预训练 layers2 (dim=96)。
+    关键差异：预训练 layers2 num_heads=6，VSNet num_heads=3。
     """
     if hasattr(pretrained_dict, "state_dict"):
         pretrained_dict = pretrained_dict.state_dict()
 
     model_dict = model.state_dict()
     mapped = 0
+    skipped_shape_mismatch = 0
 
     for k_model in model_dict:
         if "swintransformer" not in k_model:
             continue
 
-        # 去掉模型网络层名中的 "backbone." 前缀，以便和预训练权重匹配
+        # 去掉 backbone. 前缀 + swintransformer → swinViT.layers2.0
         k_pure = k_model.replace("backbone.", "")
+        candidate = k_pure.replace("swintransformer", "swinViT.layers2.0")
 
-        # 尝试匹配：将自己的 swintransformer 映射到官方的 swinViT.layers3
-        candidate = k_pure.replace("swintransformer", "swinViT.layers3")
-        if candidate in pretrained_dict and \
-           model_dict[k_model].shape == pretrained_dict[candidate].shape:
-            model_dict[k_model] = pretrained_dict[candidate]
-            mapped += 1
-            continue
+        if candidate in pretrained_dict:
+            pretrained_shape = pretrained_dict[candidate].shape
+            model_shape = model_dict[k_model].shape
 
-        # 尝试去掉前缀后直接同名匹配
-        if k_pure in pretrained_dict and \
-           model_dict[k_pure].shape == pretrained_dict[k_pure].shape:
-            model_dict[k_model] = pretrained_dict[k_pure]
-            mapped += 1
+            if model_shape == pretrained_shape:
+                model_dict[k_model] = pretrained_dict[candidate]
+                mapped += 1
+            elif ("relative_position_bias_table" in k_model and
+                  len(model_shape) == 2 and len(pretrained_shape) == 2 and
+                  model_shape[0] == pretrained_shape[0]):
+                # VSNet num_heads=3, 预训练 num_heads=6 → 截取前 3 个 head
+                model_dict[k_model] = pretrained_dict[candidate][:, :model_shape[1]].contiguous()
+                mapped += 1
+                skipped_shape_mismatch += 1
+            # qkv.bias 在 VSNet 中不存在（qkv_bias=False）→ 跳过
 
     model.load_state_dict(model_dict, strict=False)
-    print(f"[迁移学习]   已映射 {mapped} 个层的预训练权重 （共 {len(model_dict)} 层）")
+    details = f"（共 {len(model_dict)} 层）"
+    if skipped_shape_mismatch > 0:
+        details += f"，其中 {skipped_shape_mismatch} 层因 num_heads 差异做了截取适配"
+    print(f"[迁移学习]   已映射 {mapped} 个层的预训练权重 {details}")
 
 
 def _apply_kaiming_init(model):
@@ -469,7 +497,7 @@ def main():
         model.train()
         epoch_loss = 0
         step = 0
-        grad_accum_steps = max(1, 4 // args.batch_size)  # 目标有效 batch_size ≈ 4
+        grad_accum_steps = max(1, 8 // args.batch_size)  # 目标有效 batch_size ≈ 8
 
         optimizer.zero_grad()
         for batch_data in train_loader:
