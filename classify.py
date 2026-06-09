@@ -24,6 +24,7 @@ import sys
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.amp import autocast
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd,
     ScaleIntensityd, Resized
@@ -97,7 +98,16 @@ def load_model(model_path, image_size, device):
     model = VSNetClassifier(base_vsnet, num_classes=2).to(device)
 
     state_dict = torch.load(model_path, map_location=device)
-    model.load_state_dict(state_dict, strict=False)
+    miss, unex = model.load_state_dict(state_dict, strict=False)
+    if miss:
+        print(f"[WARN] missing keys ({len(miss)}): {miss[:5]}{'...' if len(miss) > 5 else ''}")
+        # 缺了分类头 → 权重不匹配，无法推理
+        fc_missing = [k for k in miss if "fc" in k]
+        if fc_missing:
+            print(f"[ERROR] 分类头权重缺失，模型文件可能不兼容: {fc_missing}")
+            sys.exit(1)
+    if unex:
+        print(f"[WARN] unexpected keys ({len(unex)}): {unex[:5]}{'...' if len(unex) > 5 else ''}")
     model.eval()
     print(f"[OK] 已加载模型: {model_path}")
     return model
@@ -178,7 +188,9 @@ def classify(model, samples, image_size, device):
     """
     逐样本推理，返回每个样本的预测结果。
     """
-    # 预处理（无增强）
+    model.eval()
+    use_amp = device.type == "cuda"
+
     transforms = Compose([
         LoadImaged(keys=["image"], reader="ITKReader"),
         EnsureChannelFirstd(keys=["image"]),
@@ -193,7 +205,8 @@ def classify(model, samples, image_size, device):
             data = transforms({"image": sample["image"]})
             inp = data["image"].unsqueeze(0).to(device)  # [1, C, D, H, W]
 
-            output = model(inp)
+            with autocast(device.type, enabled=use_amp):
+                output = model(inp)
             probs = torch.softmax(output, dim=1).squeeze(0)
             pred = int(torch.argmax(probs).item())
             confidence = float(probs[pred].item())

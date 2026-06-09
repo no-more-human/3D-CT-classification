@@ -6,10 +6,17 @@
 
 命名规则：{原始前缀}_aug{索引}.nii.gz  例：FD_1_aug0.nii.gz
 保存位置：与原始文件相同类别目录下（dataset/NIfTI_Data/{FD|OF}/）
+输出清单：dataset/NIfTI_Data/augment_manifest.json（原始文件→增强文件列表）
+        供下游 transfer_learning.py 按原始样本分组划分，防止同一样本的
+        增强版本泄漏到训练/验证/测试的不同集合中。
+
+随机种子已固定（seed=42），每次运行生成相同的增强结果，保证实验可复现。
 """
 import os
 import re
 import glob
+import json
+import random as _random
 import numpy as np
 import torch
 import SimpleITK as sitk
@@ -31,6 +38,7 @@ from monai.transforms import (
 DATA_DIR = r"F:\python\3DCT_Classification\dataset\NIfTI_Data"
 AUGMENT_FACTOR = 10          # 每个原始样本生成的增强副本数
 CATEGORIES = ["FD", "OF"]    # 分类类别
+MANIFEST_PATH = os.path.join(DATA_DIR, "augment_manifest.json")
 
 
 # ==========================================
@@ -83,6 +91,18 @@ def _is_original_file(filepath: str) -> bool:
 
 
 def main():
+    # 固定随机种子，保证增强结果可复现
+    _random.seed(42)
+    np.random.seed(42)
+    torch.manual_seed(42)
+
+    # 加载已有 manifest（若存在），支持断点续跑时合并
+    if os.path.exists(MANIFEST_PATH):
+        with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    else:
+        manifest = {}
+
     pipeline = build_augment_pipeline()
 
     total_original = 0
@@ -116,9 +136,12 @@ def main():
             arr = sitk.GetArrayFromImage(sitk_img).astype(np.float32)  # [D, H, W]
             img_tensor = torch.from_numpy(arr).unsqueeze(0)            # [1, D, H, W]
 
+            # 收集该原始样本对应的所有增强文件路径（含已存在的）
+            aug_paths = []
             for aug_idx in range(AUGMENT_FACTOR):
                 out_name = f"{base_name}_aug{aug_idx}.nii.gz"
                 out_path = os.path.join(cat_dir, out_name)
+                aug_paths.append(out_path)
 
                 # 断点续跑：已存在的增强文件直接跳过
                 if os.path.exists(out_path):
@@ -139,6 +162,7 @@ def main():
             total_original += 1
             _last_example_cat = cat
             _last_example_base = src_path
+            manifest[src_path] = aug_paths
 
     # ---- 汇总 ----
     print(f"\n{'='*50}")
@@ -149,6 +173,11 @@ def main():
         print(f"  跳过已存在: {total_skipped} 份")
     print(f"  增强后目录内文件总数: {total_original + total_new + total_skipped} 个")
     print(f"{'='*50}")
+
+    # 写入 manifest，供下游 transfer_learning.py 按原始样本分组划分
+    with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    print(f"\n  增强清单已保存: {MANIFEST_PATH}")
 
     # 打印示例路径，让用户明确文件位置和命名
     example_base = _last_example_base
