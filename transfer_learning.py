@@ -41,7 +41,7 @@ from VSNet import VSNet
 parser = argparse.ArgumentParser(description="VSNet 迁移学习训练")
 parser.add_argument("--lr", type=float, default=2e-4, help="初始学习率")
 parser.add_argument("--epochs", type=int, default=40, help="训练总轮数")
-parser.add_argument("--freeze_epochs", type=int, default=10,
+parser.add_argument("--freeze_epochs", type=int, default=5,
                     help="冻结 backbone 的轮数（先训练分类头）")
 parser.add_argument("--batch_size", type=int, default=1, help="批次大小")
 parser.add_argument("--data_dir", type=str,
@@ -130,31 +130,33 @@ def load_pretrained_weights(model, device):
 
 def _map_swin_weights(model, pretrained_dict):
     """
-    将 SwinUNETR 的预训练权重映射到 VSNet 的 Swin Transformer 瓶颈层。
-    只映射兼容的层名，不匹配的层保持随机初始化。
+    【修复版】将 SwinUNETR 的预训练权重映射到 VSNet 的 Swin Transformer 瓶颈层。
     """
-    model_dict = model.state_dict()
+    if hasattr(pretrained_dict, "state_dict"):
+        pretrained_dict = pretrained_dict.state_dict()
 
-    # SwinUNETR 的 Swin Transformer 层名 → VSNet 的层名映射规则
-    # SwinUNETR: swinViT.layers{0-3}.blocks{0-1}.xxx
-    # VSNet:    swintransformer.blocks{0-1}.xxx
+    model_dict = model.state_dict()
     mapped = 0
+
     for k_model in model_dict:
         if "swintransformer" not in k_model:
             continue
 
-        # 尝试匹配：swinUNETR 的 swinViT.layers 最后一层 → VSNet 的 swintransformer
-        candidate = k_model.replace("swintransformer", "swinViT.layers3")
+        # 去掉模型网络层名中的 "backbone." 前缀，以便和预训练权重匹配
+        k_pure = k_model.replace("backbone.", "")
+
+        # 尝试匹配：将自己的 swintransformer 映射到官方的 swinViT.layers3
+        candidate = k_pure.replace("swintransformer", "swinViT.layers3")
         if candidate in pretrained_dict and \
            model_dict[k_model].shape == pretrained_dict[candidate].shape:
             model_dict[k_model] = pretrained_dict[candidate]
             mapped += 1
             continue
 
-        # 尝试直接匹配
-        if k_model in pretrained_dict and \
-           model_dict[k_model].shape == pretrained_dict[k_model].shape:
-            model_dict[k_model] = pretrained_dict[k_model]
+        # 尝试去掉前缀后直接同名匹配
+        if k_pure in pretrained_dict and \
+           model_dict[k_pure].shape == pretrained_dict[k_pure].shape:
+            model_dict[k_model] = pretrained_dict[k_pure]
             mapped += 1
 
     model.load_state_dict(model_dict, strict=False)
@@ -467,26 +469,41 @@ def main():
         model.train()
         epoch_loss = 0
         step = 0
+        grad_accum_steps = max(1, 4 // args.batch_size)  # 目标有效 batch_size ≈ 4
+
+        optimizer.zero_grad()
         for batch_data in train_loader:
             step += 1
             inputs = batch_data["image"].to(device)
             labels = batch_data["label"].to(device)
 
-            optimizer.zero_grad()
             with autocast(device.type, enabled=use_amp):
                 outputs = model(inputs)
                 loss = loss_function(outputs, labels)
 
+            # 梯度累加：将 loss 按累加步数缩放，兼容 batch_size=1 时的降级方案
+            loss = loss / grad_accum_steps
             scaler.scale(loss).backward()
+            epoch_loss += loss.item() * grad_accum_steps  # 恢复原始 loss 用于日志
+
+            if step % grad_accum_steps == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+        # 处理 epoch 末尾剩余的累积梯度（总步数不被 grad_accum_steps 整除时）
+        if step % grad_accum_steps != 0:
             scaler.step(optimizer)
             scaler.update()
-            epoch_loss += loss.item()
+            optimizer.zero_grad()
+
+        epoch_loss = epoch_loss / step  # 归一化为单步均值
 
         # ---- 评估（验证集） ----
         val_acc, fd_acc, of_acc, _, _ = evaluate(model, val_loader, device)
         phase = "冻结" if (pretrained_loaded and epoch < args.freeze_epochs) else "微调"
         print(f"Epoch [{epoch+1}/{args.epochs}][{phase}] "
-              f"Loss: {epoch_loss/step:.4f} | "
+              f"Loss: {epoch_loss:.4f} | "
               f"Val Acc: {val_acc:.2f}% (FD:{fd_acc:.2f}% OF:{of_acc:.2f}%)")
 
         if val_acc > best_val_acc:
