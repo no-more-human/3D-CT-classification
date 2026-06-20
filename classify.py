@@ -3,7 +3,7 @@
 
 用法：
   # 按类别目录组织（自动检测标签并计算准确率）
-  python classify.py --model best_model_tl.pth --data_dir F:/path/to/new_data
+  python classify.py --model best_model_tl.pth --test_split test_split.json
 
   # 单文件推理
   python classify.py --model best_model_tl.pth --single F:/path/to/sample.nii.gz
@@ -23,13 +23,7 @@ import sys
 
 import numpy as np
 import torch
-import torch.nn as nn
 from torch.amp import autocast
-from monai.transforms import (
-    Compose, LoadImaged, EnsureChannelFirstd,
-    ScaleIntensityd, Resized
-)
-from monai.data import Dataset, DataLoader
 
 from VSNet import VSNet
 
@@ -49,44 +43,13 @@ parser.add_argument("--model", type=str, default="best_model_tl.pth",
 parser.add_argument("--image_size", type=int, default=96, help="输入尺寸（需与训练时一致）")
 parser.add_argument("--device", type=str, default="cuda",
                     help="推理设备 (cuda / cpu)")
+parser.add_argument("--save_json", type=str, default=None,
+                    help="将推理结果保存为 JSON（供 plot_metrics.py 使用），例: results.json")
 args = parser.parse_args()
 
 
 # ==========================================
-# 1. 分类器（与训练时完全一致）
-# ==========================================
-class VSNetClassifier(nn.Module):
-    def __init__(self, original_model, num_classes=2):
-        super().__init__()
-        self.backbone = original_model
-        in_features = 16 * 12
-        self.global_pool = nn.AdaptiveAvgPool3d(1)
-        self.fc = nn.Linear(in_features, num_classes)
-
-    def forward(self, x):
-        x1 = self.backbone.resuetencoder1(x)
-        x2 = self.backbone.resuetencoder2(x1)
-        x2 = self.backbone.pool2(x2)
-        x1 = self.backbone.gate2(x1, x2)
-        x3 = self.backbone.resuetencoder3(x2)
-        x3 = self.backbone.pool3(x3)
-        x2 = self.backbone.gate3(x2, x3)
-        x4 = self.backbone.resuetencoder4(x3)
-        x4 = self.backbone.pool4(x4)
-        x3 = self.backbone.gate4(x3, x4)
-
-        x5 = self.backbone.swintransformer(x4.contiguous())
-        x5 = self.backbone.CSA(x5)
-        x5 = self.backbone.SSA(x5)
-
-        out = self.global_pool(x5)
-        out = out.view(out.size(0), -1)
-        out = self.fc(out)
-        return out
-
-
-# ==========================================
-# 2. 模型加载
+# 1. 模型加载（直接使用 VSNet classification 模式，与训练保持一致）
 # ==========================================
 def load_model(model_path, image_size, device):
     """加载训练好的模型权重"""
@@ -94,15 +57,22 @@ def load_model(model_path, image_size, device):
         print(f"[ERROR] 模型文件不存在: {model_path}")
         sys.exit(1)
 
-    base_vsnet = VSNet(img_size=image_size, in_channels=1, out_channels=3, training=False)
-    model = VSNetClassifier(base_vsnet, num_classes=2).to(device)
+    # 与训练脚本保持完全一致：mode="classification"，drop_rate=0.3
+    model = VSNet(
+        img_size=image_size,
+        in_channels=1,
+        out_channels=3,
+        num_classes=2,
+        mode="classification",
+        drop_rate=0.3,
+        training=False,
+    ).to(device)
 
     state_dict = torch.load(model_path, map_location=device)
     miss, unex = model.load_state_dict(state_dict, strict=False)
     if miss:
         print(f"[WARN] missing keys ({len(miss)}): {miss[:5]}{'...' if len(miss) > 5 else ''}")
-        # 缺了分类头 → 权重不匹配，无法推理
-        fc_missing = [k for k in miss if "fc" in k]
+        fc_missing = [k for k in miss if "classifier" in k]
         if fc_missing:
             print(f"[ERROR] 分类头权重缺失，模型文件可能不兼容: {fc_missing}")
             sys.exit(1)
@@ -191,19 +161,19 @@ def classify(model, samples, image_size, device):
     model.eval()
     use_amp = device.type == "cuda"
 
-    transforms = Compose([
-        LoadImaged(keys=["image"], reader="ITKReader"),
-        EnsureChannelFirstd(keys=["image"]),
-        ScaleIntensityd(keys=["image"]),
-        Resized(keys=["image"], spatial_size=(image_size, image_size, image_size)),
-    ])
-
     results = []
 
     for sample in samples:
         try:
-            data = transforms({"image": sample["image"]})
-            inp = data["image"].unsqueeze(0).to(device)  # [1, C, D, H, W]
+            # 直接用 SimpleITK 加载 .nii.gz，跳过 MONAI reader
+            import SimpleITK as sitk_
+            sitk_img = sitk_.ReadImage(sample["image"])
+            arr = sitk_.GetArrayFromImage(sitk_img).astype(np.float32)  # [D, H, W]
+            # Min-Max 归一化
+            amin, amax = arr.min(), arr.max()
+            if amax > amin:
+                arr = (arr - amin) / (amax - amin)
+            inp = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).to(device)  # [1, 1, D, H, W]
 
             with autocast(device.type, enabled=use_amp):
                 output = model(inp)
@@ -331,6 +301,19 @@ def main():
 
     # ---- 输出 ----
     print_results(results, has_label)
+
+    # ---- 保存结果 JSON（供 plot_metrics.py） ----
+    if args.save_json:
+        import json as _json
+        # numpy array 不可序列化，转换
+        serializable = []
+        for r in results:
+            sr = {k: v for k, v in r.items() if k != "probs"}
+            sr["probs"] = r["probs"].tolist()
+            serializable.append(sr)
+        with open(args.save_json, "w", encoding="utf-8") as fh:
+            _json.dump(serializable, fh, ensure_ascii=False, indent=2)
+        print(f">>> 推理结果已保存: {args.save_json}")
 
 
 if __name__ == "__main__":

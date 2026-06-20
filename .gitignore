@@ -19,6 +19,9 @@ pretrained_models/
 
 # 训练自动生成
 test_split.json
+results.json
+training_log*.json
+plots/
 
 # 系统文件
 Thumbs.db
