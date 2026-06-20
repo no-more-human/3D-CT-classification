@@ -459,8 +459,8 @@ def train_one_run(model, train_files, val_files, device, fold_name="", log_file=
         Resized(keys=["image"], spatial_size=(image_size, image_size, image_size)),
     ])
 
-    train_loader = DataLoader(Dataset(data=train_files, transform=train_transforms), batch_size=args.batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(Dataset(data=val_files, transform=val_transforms), batch_size=args.batch_size, shuffle=False, num_workers=0)
+    train_loader = DataLoader(Dataset(data=train_files, transform=train_transforms), batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    val_loader = DataLoader(Dataset(data=val_files, transform=val_transforms), batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
     fd_train = sum(1 for s in train_files if s["label"] == 0)
     of_train = sum(1 for s in train_files if s["label"] == 1)
@@ -616,7 +616,7 @@ def main():
                 ScaleIntensityd(keys=["image"]),
                 Resized(keys=["image"], spatial_size=(args.image_size, args.image_size, args.image_size)),
             ])
-            test_loader = DataLoader(Dataset(data=test_files, transform=val_transforms), batch_size=args.batch_size, shuffle=False, num_workers=0)
+            test_loader = DataLoader(Dataset(data=test_files, transform=val_transforms), batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True)
             test_acc, test_fd_acc, test_of_acc, _, total = evaluate(best_fold_model, test_loader, device)
             print(f"  测试集总样本: {total} 例")
             print(f"  整体准确率: {test_acc:.2f}% | FD: {test_fd_acc:.2f}% | OF: {test_of_acc:.2f}%")
